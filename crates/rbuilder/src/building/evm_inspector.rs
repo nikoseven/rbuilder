@@ -22,6 +22,9 @@ pub struct UsedStateTrace {
     pub read_balances: HashMap<Address, U256>,
     /// balance after last transfer
     pub written_balances: HashMap<Address, U256>,
+
+    pub created_contracts: Vec<Address>,
+    pub destructed_contracts: Vec<Address>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,6 +121,9 @@ where
                     let addr = Address::from_word(B256::from(addr.to_be_bytes()));
                     self.next_step_action = NextStepAction::ReadBalanceResult(addr);
                 }
+            }
+            opcode::CALL => {
+                todo!()
             }
             _ => (),
         }
