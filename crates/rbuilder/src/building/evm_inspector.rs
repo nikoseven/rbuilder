@@ -18,19 +18,30 @@ pub struct UsedStateTrace {
     pub read_slot_values: HashMap<SlotKey, B256>,
     /// write slot values contains last write
     pub written_slot_values: HashMap<SlotKey, B256>,
+    /// balance of first read
+    pub read_balances: HashMap<Address, U256>,
+    /// balance after last transfer
+    pub written_balances: HashMap<Address, U256>,
+}
+
+#[derive(Debug, Clone, Default)]
+enum NextStepAction {
+    #[default]
+    None,
+    ReadSloadKeyResult(B256),
+    ReadBalanceResult(Address),
 }
 
 #[derive(Debug)]
 struct UsedStateEVMInspector<'a> {
-    // if previous instruction was sload we store key that was used to call sload here
-    tmp_sload_key: Option<B256>,
+    next_step_action: NextStepAction,
     used_state_trace: &'a mut UsedStateTrace,
 }
 
 impl<'a> UsedStateEVMInspector<'a> {
     fn new(used_state_trace: &'a mut UsedStateTrace) -> Self {
         Self {
-            tmp_sload_key: None,
+            next_step_action: NextStepAction::None,
             used_state_trace,
         }
     }
@@ -58,25 +69,36 @@ where
     DB: Database,
 {
     fn step(&mut self, interpreter: &mut Interpreter, _: &mut EvmContext<DB>) {
-        if let Some(slot) = self.tmp_sload_key.take() {
-            if let Ok(value) = interpreter.stack.peek(0) {
-                let value = B256::from(value.to_be_bytes());
-                let key = SlotKey {
-                    address: interpreter.contract.address,
-                    key: slot,
-                };
-                self.used_state_trace
-                    .read_slot_values
-                    .entry(key)
-                    .or_insert(value);
+        match std::mem::take(&mut self.next_step_action) {
+            NextStepAction::ReadSloadKeyResult(slot) => {
+                if let Ok(value) = interpreter.stack.peek(0) {
+                    let value = B256::from(value.to_be_bytes());
+                    let key = SlotKey {
+                        address: interpreter.contract.address,
+                        key: slot,
+                    };
+                    self.used_state_trace
+                        .read_slot_values
+                        .entry(key)
+                        .or_insert(value);
+                }
             }
+            NextStepAction::ReadBalanceResult(addr) => {
+                if let Ok(value) = interpreter.stack.peek(0) {
+                    self.used_state_trace
+                        .read_balances
+                        .entry(addr)
+                        .or_insert(value);
+                }
+            }
+            NextStepAction::None => {}
         }
 
         match interpreter.current_opcode() {
             opcode::SLOAD => {
                 if let Ok(slot) = interpreter.stack().peek(0) {
                     let slot = B256::from(slot.to_be_bytes());
-                    self.tmp_sload_key = Some(slot);
+                    self.next_step_action = NextStepAction::ReadSloadKeyResult(slot);
                 }
             }
             opcode::SSTORE => {
@@ -89,6 +111,12 @@ where
                         key: B256::from(slot.to_be_bytes()),
                     };
                     self.used_state_trace.written_slot_values.insert(key, value);
+                }
+            }
+            opcode::BALANCE => {
+                if let Ok(addr) = interpreter.stack().peek(0) {
+                    let addr = Address::from_word(B256::from(addr.to_be_bytes()));
+                    self.next_step_action = NextStepAction::ReadBalanceResult(addr);
                 }
             }
             _ => (),
