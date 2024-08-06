@@ -2,7 +2,7 @@ use ahash::HashMap;
 use alloy_primitives::{Address, B256, U256};
 use reth::{primitives::TransactionSignedEcRecovered, revm::access_list::AccessListInspector};
 use revm::{
-    interpreter::{opcode, Interpreter},
+    interpreter::{opcode, CallInputs, CallOutcome, Interpreter},
     Database, EvmContext, Inspector,
 };
 
@@ -20,9 +20,9 @@ pub struct UsedStateTrace {
     pub written_slot_values: HashMap<SlotKey, B256>,
     /// balance of first read
     pub read_balances: HashMap<Address, U256>,
-    /// balance after last transfer
-    pub written_balances: HashMap<Address, U256>,
-
+    /// number of `wei` sent or received during execution
+    pub received_amount: HashMap<Address, U256>,
+    pub sent_amount: HashMap<Address, U256>,
     pub created_contracts: Vec<Address>,
     pub destructed_contracts: Vec<Address>,
 }
@@ -122,10 +122,55 @@ where
                     self.next_step_action = NextStepAction::ReadBalanceResult(addr);
                 }
             }
-            opcode::CALL => {
-                todo!()
+            opcode::SELFBALANCE => {
+                let addr = interpreter.contract().address;
+                self.next_step_action = NextStepAction::ReadBalanceResult(addr);
             }
             _ => (),
+        }
+    }
+
+    fn call(&mut self, _: &mut EvmContext<DB>, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        if !inputs.transfer.value.is_zero() {
+            *self
+                .used_state_trace
+                .sent_amount
+                .entry(inputs.transfer.source)
+                .or_default() += inputs.transfer.value;
+            *self
+                .used_state_trace
+                .received_amount
+                .entry(inputs.transfer.target)
+                .or_default() += inputs.transfer.value;
+        }
+        None
+    }
+
+    fn create_end(
+        &mut self,
+        _: &mut EvmContext<DB>,
+        _: &revm::interpreter::CreateInputs,
+        outcome: revm::interpreter::CreateOutcome,
+    ) -> revm::interpreter::CreateOutcome {
+        if let Some(addr) = outcome.address {
+            self.used_state_trace.created_contracts.push(addr);
+        }
+        outcome
+    }
+
+    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+        self.used_state_trace.destructed_contracts.push(contract);
+        if !value.is_zero() {
+            *self
+                .used_state_trace
+                .sent_amount
+                .entry(contract)
+                .or_default() += value;
+            *self
+                .used_state_trace
+                .received_amount
+                .entry(target)
+                .or_default() += value;
         }
     }
 }
