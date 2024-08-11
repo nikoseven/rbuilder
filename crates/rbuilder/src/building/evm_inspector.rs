@@ -222,4 +222,17 @@ where
             used_state_inspector.step(interp, data);
         }
     }
+
+    #[inline]
+    fn call(
+        &mut self,
+        context: &mut EvmContext<DB>,
+        inputs: &mut CallInputs,
+    ) -> Option<CallOutcome> {
+        if let Some(used_state_inspector) = &mut self.used_state_inspector {
+            used_state_inspector.call(context, inputs)
+        } else {
+            None
+        }
+    }
 }
